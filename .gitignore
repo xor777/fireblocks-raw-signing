@@ -177,3 +177,4 @@ pyrightconfig.json
 /*.key
 /*.json
 /secrets
+**/.DS_Store
