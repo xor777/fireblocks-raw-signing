@@ -14,22 +14,59 @@
     </nav>
 
     <div class="container mt-4">
-        <h2>P2P Side</h2>
-        <form id="p2pApiForm">
+        <div id="connectionResult" class="alert"></div>
+
+        <h2>Step 1: Connect Fireblocks</h2>
+        <form id="fireblocksForm">
             <div class="form-group">
-                <label for="p2pApiKey">API Key</label>
-                <input type="text" class="form-control" id="p2pApiKey" name="p2p_api_key" value="{{ defaults['p2p_api_key']}}">
+                <label for="fireblocksApiKey">API Key</label>
+                <input type="text" class="form-control" id="fireblocksApiKey" name="fireblocks_api_key" value="e52bff63-d7af-4883-b14a-cd114555e4ae">
+            </div>
+
+            <form id="fireblocksSecretForm" method="post" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label for="fireblocksSecret">Fireblocks secret key</label>
+                    <input type="file" class="form-control-file" id="fireblocksSecret" name="fireblocks_secret">
+                </div>
+                <button type="button" id="uploadFireblocksSecretButton" class="btn btn-info">Upload</button>
+            </form>
+            <div id="uploadResult" class="alert"></div>
+
+            <button type="button" id="connectFireblocksButton" class="btn btn-primary">Connect</button>
+        </form>
+
+        <h2>Step 2: Select Vault and Asset Wallet</h2>
+        <form id="transactionSignForm">
+            <div class="form-group">
+                <label for="vaultSelector">Vault</label>
+                <select id="vaultSelector" class="form-control">
+                </select>
             </div>
             <div class="form-group">
-                <label for="stashWalletAddress">Cosmos Wallet Address</label>
-                <input type="text" class="form-control" id="stashWalletAddress" name="stash_wallet_address" value="{{ defaults['wallet_address'] }}">
+                <label for="assetSelector">Asset Wallet</label>
+                <select id="assetSelector" class="form-control">
+                </select>
+            </div>
+        </form>
+
+        <h2>Step 3: Create ATOM Staking Transaction</h2>
+        <form id="createTxForm">
+            <div class="form-group">
+                <label for="stashWalletAddress">Wallet Address</label>
+                <div class="input-group">
+                    <input type="text" class="form-control" id="stashWalletAddress" name="stash_wallet_address">
+                    <div class="input-group-append">
+                        <button type="button" class="btn btn-primary" id="getAddressButton">Get address</button>
+                    </div>
+                </div>
             </div>
             <div class="form-group">
                 <label for="amount">Amount of ATOM</label>
                 <input type="number" class="form-control" id="amount" name="amount">
             </div>
-            <button type="button" id="runP2PApi" class="btn btn-primary">Run P2P API</button>
+            <button type="button" id="createTxButton" class="btn btn-primary">Create Staking Transaction</button>
         </form>
+
 
         <div class="form-group mt-4">
             <label for="txData">TX Data</label>
@@ -41,29 +78,6 @@
             <input type="text" class="form-control" id="txHash" name="tx_hash">
         </div>
 
-        <h2>Fireblocks Side</h2>
-        <form id="fireblocksForm">
-            <div class="form-group">
-                <label for="fireblocksApiKey">API Key</label>
-                <input type="text" class="form-control" id="fireblocksApiKey" name="fireblocks_api_key" value="{{ defaults['fireblocks_api_key'] }}">
-            </div>
-
-            <form id="fireblocksSecretForm" method="post" enctype="multipart/form-data">
-                <div class="form-group">
-                    <label for="fireblocksSecret">Fireblocks secret key</label>
-                    <input type="file" class="form-control-file" id="fireblocksSecret" name="fireblocks_secret">
-                </div>
-                <button type="button" id="uploadFireblocksSecret" class="btn btn-info">Upload</button>
-            </form>
-            <div id="uploadResult" class="alert"></div>
-
-            <div class="form-group">
-                <label for="fireblocksVaultId">Vault ID</label>
-                <input type="text" class="form-control" id="fireblocksVaultId" name="fireblocks_vault_id" value="{{ defaults['fireblocks_vault_id'] }}">
-            </div>
-            <button type="button" id="launchFireblocks" class="btn btn-secondary">Send to Fireblocks</button>
-        </form>
-
         <div class="form-group mt-4">
             <label for="result">Result</label>
             <textarea class="form-control" id="result" rows="3"></textarea>
@@ -72,25 +86,115 @@
 
 
     <script>
+        function showAlert(text, success) {
+            if (success) {
+                $('#connectionResult').removeClass('alert-danger').addClass('alert-success').text(text);
+            } else {
+                $('#connectionResult').removeClass('alert-success').addClass('alert-danger').text(text);
+            }
+        }
+
         $(document).ready(function() {
-            $('#runP2PApi').click(function() {
+            $('#getAddressButton').click(function() {
+                var vaultId = $('#vaultSelector').val();
+                var assetId = $('#assetSelector').val();
+
                 $.ajax({
-                    url: '/run_api',
-                    type: 'post',
-                    data: $('#p2pApiForm').serialize(),
-                    success: function(data) {
-                        $('#txData').val(data.tx_data);
-                        $('#txHash').val(data.tx_hash);
+                    url: '/get_wallet_address',
+                    type: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        vault_account_id: vaultId,
+                        asset_id: assetId
+                    }),
+                    success: function(response) {
+                        if (response.success) {
+                            $('#stashWalletAddress').val(response.address);
+                        } else {
+                            showAlert('Error: ' + response.error, false);
+                        }
                     }
                 });
             });
 
-            $('#launchFireblocks').click(function() {
+            $('#createTxButton').click(function() {
+                $.ajax({
+                    url: '/create_tx',
+                    type: 'post',
+                    data: $('#createTxForm').serialize(),
+                    success: function(data) {
+                        if (data.success) {
+                            $('#txData').val(data.tx_data);
+                            $('#txHash').val(data.tx_hash);
+                        } else {
+                            showAlert('Error: ' + data.error, false);
+                        }
+                    }
+                });
+            });
+
+
+            $('#connectFireblocksButton').click(function() {
+                $.ajax({
+                    url: '/connect_fireblocks',
+                    type: 'post',
+                    data: $('#fireblocksForm').serialize(),
+                    success: function(data) {
+
+                        console.log(data);
+
+                        if (data.success && data.vaults && data.vaults.accounts && Array.isArray(data.vaults.accounts)) {
+                            var vaultSelector = $('#vaultSelector');
+                            var assetSelector = $('#assetSelector');
+
+                            vaultSelector.empty();
+                            assetSelector.empty();
+
+                            data.vaults.accounts.forEach(function(account) {
+                                vaultSelector.append($('<option>', {
+                                    value: account.id,
+                                    text: account.name
+                                }));
+                            });
+
+                            vaultSelector.change(function() {
+                                var selectedAccountId = $(this).val();
+                                var selectedAccount = data.vaults.accounts.find(function(account) {
+                                    return account.id === selectedAccountId;
+                                });
+
+                                assetSelector.empty();
+
+                                if (selectedAccount && selectedAccount.assets && Array.isArray(selectedAccount.assets)) {
+                                    selectedAccount.assets.forEach(function(asset) {
+                                        assetSelector.append($('<option>', {
+                                            value: asset.id,
+                                            text: asset.id
+                                        }));
+                                    });
+                                }
+                            });
+
+                            vaultSelector.trigger('change');
+                            showAlert('Successfully connected to Fireblocks', true);
+                        } else {
+                            $('#connectionResult').text('Connection error: ' + (data.error || 'Unknown error'));
+                        }
+                    },
+                    error: function(jqXHR, textStatus, errorThrown) {
+                        console.log('AJAX error:', textStatus, ' : ', errorThrown);
+                        $('#connectionResult').text('AJAX error: ' + textStatus);
+                    }
+                });
+            });
+
+
+            $('#signTransaction').click(function() {
                 var formData = new FormData($('#fireblocksForm')[0]);
                 formData.append('txData', $('#txData').val());
                 formData.append('txHash', $('#txHash').val());
                 $.ajax({
-                    url: '/launch',
+                    url: '/sign_tx',
                     type: 'post',
                     data: formData,
                     processData: false,
@@ -101,7 +205,7 @@
                 });
             });
 
-            $('#uploadFireblocksSecret').click(function() {
+            $('#uploadFireblocksSecretButton').click(function() {
                 var formData = new FormData();
                 formData.append('fireblocks_secret', $('#fireblocksSecret')[0].files[0]);
 
@@ -111,16 +215,19 @@
                     data: formData,
                     contentType: false,
                     processData: false,
-                    success: function(response) {
-                        $('#uploadResult').text(response.result);
-                        console.log(response);
+                    success: function(data) {
+                        if (data.success) {
+                            showAlert(data.result, true);
+                        } else {
+                            showAlert(data.result, false);
+                        }
                     },
                     error: function(xhr, status, error) {
-                        $('#uploadResult').text('Error: ' + error)
-                        console.error(error);
+                        showAlert('AJAX error: ' + error, false);
                     }
                 });
             });
+
 
         });
     </script>
