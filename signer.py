@@ -4,33 +4,40 @@ import json
 import hashlib
 import requests
 import logging
-from fireblocks_sdk import FireblocksSDK, TransferPeerPath, VAULT_ACCOUNT, PagedVaultAccountsRequestFilters
+from fireblocks_sdk import (FireblocksSDK, TransferPeerPath, VAULT_ACCOUNT, TRANSACTION_STATUS_COMPLETED,
+                            PagedVaultAccountsRequestFilters)
 from flask import Flask, request, jsonify, render_template
 
 dotenv.load_dotenv()
 
+
 class BaseConfig:
     FIREBLOCKS_API_SECRET = ''
     FIREBLOCKS_KEY_FILE = 'fireblocks_secret.key'
+    FIREBLOCKS_TRANSACTION_ID = ''
+
 
 class ProdEnvironment:
     COSMOS_NETWORK = "cosmoshub-4"
     P2P_API_KEY = os.getenv('P2P_API_KEY_PROD')
-    P2P_API_URL = f"https://api.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/staking/"
+    P2P_API_URL = f"https://api.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/"
     FIREBLOCKS_API_BASE_URL = "https://api.fireblocks.io"
     FIREBLOCKS_API_KEY = os.getenv('FIREBLOCKS_API_KEY_PROD')
+
 
 class TestEnvironment:
     COSMOS_NETWORK = "theta-testnet-001"
     P2P_API_KEY = os.getenv('P2P_API_KEY_TEST')
-    P2P_API_URL = f"https://api-test.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/staking/"
+    P2P_API_URL = f"https://api-test.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/"
     FIREBLOCKS_API_BASE_URL = "https://sandbox-api.fireblocks.io"
     FIREBLOCKS_API_KEY = os.getenv('FIREBLOCKS_API_KEY_TEST')
 
-logging.basicConfig(level = logging.DEBUG,
-                    format = '%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
+
+logging.basicConfig(level=logging.DEBUG,
+                    format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
 
 app = Flask(__name__)
+
 
 def set_environment(environment):
     app.config.from_object(BaseConfig)
@@ -38,6 +45,7 @@ def set_environment(environment):
         app.config.from_object(ProdEnvironment)
     else:
         app.config.from_object(TestEnvironment)
+
 
 @app.route('/')
 def index():
@@ -48,10 +56,12 @@ def index():
     }
     return render_template('index.html', defaults=default_values)
 
+
 @app.route('/switch_environment', methods=['POST'])
 def switch_environment():
     # nothing here yet
     return
+
 
 @app.route('/connect_fireblocks', methods=['POST'])
 def connect_fireblocks():
@@ -62,8 +72,8 @@ def connect_fireblocks():
 
     try:
         fireblocks_api_secret = open(app.config['FIREBLOCKS_KEY_FILE'], 'r').read()
-    except:
-        return jsonify({"success": False, "error": "Secret key not found"})
+    except Exception as e:
+        return jsonify({"success": False, "error": "Secret key not found: "+str(e)})
 
     app.config['FIREBLOCKS_API_KEY'] = fireblocks_api_key
     app.config['FIREBLOCKS_API_SECRET'] = fireblocks_api_secret
@@ -81,6 +91,7 @@ def connect_fireblocks():
         return jsonify({"success": False, "error": "Error getting vaults: " + str(e)})
 
     return jsonify({'success': True, 'vaults': vaults})
+
 
 @app.route('/get_wallet_address', methods=['POST'])
 def get_wallet_address():
@@ -123,28 +134,29 @@ def create_staking_tx():
         "amount": amount
     }
 
-    response = requests.post(app.config['P2P_API_URL'] + "stake/", headers=headers, json=payload)
+    response = requests.post(app.config['P2P_API_URL'] + "staking/stake/", headers=headers, json=payload)
     response = response.json()
 
-    if 'error' in response:
-
-        app.logger.error(json.dumps(response,indent=1))
+    if 'error' in response and response['error'] is not None:
+        app.logger.error(json.dumps(response, indent=1))
         return jsonify({'success': False, 'error': response['error'].get('message', 'Unknown error')})
 
     if 'result' in response and 'transactionData' in response['result']:
-        encodedStakingTx = response['result']['transactionData'].get('encodedBody', 'no result')
+        encoded_staking_tx = response['result']['transactionData'].get('encodedBody', 'no result')
     else:
         app.logger.error(json.dumps(response, indent=1))
         return jsonify({'success': False, 'error': 'No tx data in response'})
 
-    StakingTxHash = hashlib.sha256(encodedStakingTx.encode()).hexdigest()
-    return jsonify({'success': True, 'tx_data': encodedStakingTx, 'tx_hash': StakingTxHash})
+    staking_tx_hash = hashlib.sha256(encoded_staking_tx.encode()).hexdigest()
+    return jsonify({'success': True, 'tx_data': encoded_staking_tx, 'tx_hash': staking_tx_hash})
 
 
-@app.route('/sign_tx', methods=['POST'])
-def sign_transaction():
+@app.route('/send_tx', methods=['POST'])
+def send_transaction():
 
-    txHash = request.form.get('txHash', 'no hash')
+    tx_hash = request.form.get('txHash', None)
+    if tx_hash is None:
+        return jsonify({'success': False, 'error': 'No tx hash provided'})
 
     fireblocks = FireblocksSDK(
         api_key=app.config['FIREBLOCKS_API_KEY'],
@@ -156,20 +168,81 @@ def sign_transaction():
         "rawMessageData": {
             "messages": [
                 {
-                    "content": txHash,
+                    "content": tx_hash,
                 }
             ]
         }
     }
 
-    txId, status = fireblocks.create_transaction(
+    tx_id, status = fireblocks.create_transaction(
         tx_type='RAW',
         asset_id='ATOM_COS_TEST',
         source=TransferPeerPath(VAULT_ACCOUNT, "0"),
         extra_parameters=extra
     ).values()
 
-    return jsonify({'fb_result': f'status: {status}, id: {txId}'})
+    return jsonify({'success': True, 'txId': tx_id, 'txStatus': status})
+
+
+@app.route('/check_tx_status', methods=['POST'])
+def check_tx_status():
+    data = request.get_json(force=True)
+    tx_id = data.get('transaction_id', '')
+
+    if not tx_id:
+        return jsonify({'success': False, 'error': 'No transaction ID provided'})
+
+    # 39d0cabd-0029-4f9c-b7c9-b7042c8f5051
+    fireblocks = FireblocksSDK(
+        api_key=app.config['FIREBLOCKS_API_KEY'],
+        private_key=app.config['FIREBLOCKS_API_SECRET'],
+        api_base_url=app.config['FIREBLOCKS_API_BASE_URL']
+    )
+
+    try:
+        tx_info = fireblocks.get_transaction_by_id(tx_id)
+        app.logger.debug(json.dumps(tx_info, indent=1))
+        status = tx_info.get('status', 'unknown')
+        full_sig = 'none'
+        if status == TRANSACTION_STATUS_COMPLETED:
+            full_sig = tx_info['signedMessages'][0]['signature']['fullSig']
+        return jsonify({'success': True, 'status': status, 'fullSig': full_sig})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/broadcast_tx', methods=['POST'])
+def broadcast_tx():
+    data = request.get_json(force=True)
+    tx_data = data.get('transaction_data', '')
+    tx_hash = data.get('transaction_hash', '')
+    tx_signature = data.get('transaction_signature', '')
+
+    if not tx_signature:
+        return jsonify({'success': False, 'error': 'No signature'})
+
+    # TODO: investigate how to correctly form the signed tx
+    signed_tx = tx_data + tx_hash + tx_signature
+
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": "Bearer " + app.config['P2P_API_KEY']
+    }
+
+    payload = {
+        "signedTransaction": signed_tx
+    }
+
+    response = requests.post(app.config['P2P_API_URL'] + "transaction/send/", headers=headers, json=payload)
+    response = response.json()
+
+    app.logger.error(json.dumps(response, indent=1))
+
+    if 'error' in response and response['error'] is not None:
+        return jsonify({'success': False, 'error': response['error'].get('message', 'Unknown error')})
+
+    return jsonify({'success': True, 'result': 'done'})
 
 
 @app.route('/upload_fireblocks_secret', methods=['POST'])
@@ -189,6 +262,7 @@ def upload_fireblocks_secret():
         return jsonify({'success': True, 'result': 'Successfully uploaded'})
 
     return jsonify({'success': False, 'result': 'An unexpected error occurred'})
+
 
 if __name__ == '__main__':
     set_environment('test')
