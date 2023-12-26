@@ -3,20 +3,40 @@ import dotenv
 import json
 import hashlib
 import requests
+import logging
 from fireblocks_sdk import FireblocksSDK, TransferPeerPath, VAULT_ACCOUNT, PagedVaultAccountsRequestFilters
 from flask import Flask, request, jsonify, render_template
 
 dotenv.load_dotenv()
-p2p_api_key = os.getenv('P2P_API_KEY', default='')
-cosmos_network = "theta-testnet-001"
-#cosmos_network = "cosmoshub-4"
-p2p_api_url = f"https://api-test.p2p.org/api/v1/cosmos/{cosmos_network}/staking/"
-fireblocks_api_key = '' #e52bff63-d7af-4883-b14a-cd114555e4ae
-fireblocks_api_secret = ''
-fireblocks_api_base_url = "https://sandbox-api.fireblocks.io"
+
+class BaseConfig:
+    FIREBLOCKS_API_KEY = ''
+    FIREBLOCKS_API_SECRET = ''
+    FIREBLOCKS_KEY_FILE = 'fireblocks_secret.key'
+
+class ProdEnvironment:
+    COSMOS_NETWORK = "cosmoshub-4"
+    P2P_API_KEY = os.getenv('P2P_API_KEY_PROD')
+    P2P_API_URL = f"https://api.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/staking/"
+    FIREBLOCKS_API_BASE_URL = "https://api.fireblocks.io"
+
+class TestEnvironment:
+    COSMOS_NETWORK = "theta-testnet-001"
+    P2P_API_KEY = os.getenv('P2P_API_KEY_TEST')
+    P2P_API_URL = f"https://api-test.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/staking/"
+    FIREBLOCKS_API_BASE_URL = "https://sandbox-api.fireblocks.io"
+
+logging.basicConfig(level = logging.DEBUG,
+                    format = '%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
 
 app = Flask(__name__)
 
+def set_environment(environment):
+    app.config.from_object(BaseConfig)
+    if environment == 'prod':
+        app.config.from_object(ProdEnvironment)
+    else:
+        app.config.from_object(TestEnvironment)
 
 @app.route('/')
 def index():
@@ -28,20 +48,26 @@ def index():
     }
     return render_template('index.html', defaults=default_values)
 
+@app.route('/switch_environment', methods=['POST'])
+def switch_environment():
+    # nothing here yet
+    return
 
 @app.route('/connect_fireblocks', methods=['POST'])
 def connect_fireblocks():
-    global fireblocks_api_key
-    global fireblocks_api_secret
     fireblocks_api_key = request.form.get('fireblocks_api_key')
 
     if not fireblocks_api_key:
         return jsonify({"success": False, "error": "No API key provided"})
 
     try:
-        fireblocks_api_secret = open('fireblocks_secret.key', 'r').read()
+        fireblocks_api_secret = open(app.config['FIREBLOCKS_KEY_FILE'], 'r').read()
     except:
         return jsonify({"success": False, "error": "Secret key not found"})
+
+    app.config['FIREBLOCKS_API_KEY'] = fireblocks_api_key
+    app.config['FIREBLOCKS_API_SECRET'] = fireblocks_api_secret
+    fireblocks_api_base_url = app.config['FIREBLOCKS_API_BASE_URL']
 
     fireblocks = FireblocksSDK(
         api_key=fireblocks_api_key,
@@ -65,9 +91,9 @@ def get_wallet_address():
 
     try:
         fireblocks = FireblocksSDK(
-            api_key=fireblocks_api_key,
-            private_key=fireblocks_api_secret,
-            api_base_url=fireblocks_api_base_url
+            api_key=app.config['FIREBLOCKS_API_KEY'],
+            private_key=app.config['FIREBLOCKS_API_SECRET'],
+            api_base_url=app.config['FIREBLOCKS_API_BASE_URL']
         )
 
         addr = fireblocks.get_deposit_addresses(vault_account_id=vault_account_id, asset_id=asset_id)
@@ -89,7 +115,7 @@ def create_staking_tx():
     headers = {
         "accept": "application/json",
         "content-type": "application/json",
-        "authorization": "Bearer " + p2p_api_key
+        "authorization": "Bearer " + app.config['P2P_API_KEY']
     }
 
     payload = {
@@ -97,17 +123,18 @@ def create_staking_tx():
         "amount": amount
     }
 
-    response = requests.post(p2p_api_url + "stake/", headers=headers, json=payload)
+    response = requests.post(app.config['P2P_API_URL'] + "stake/", headers=headers, json=payload)
     response = response.json()
 
     if 'error' in response:
-        print(json.dumps(response,indent=1))
+
+        app.logger.error(json.dumps(response,indent=1))
         return jsonify({'success': False, 'error': response['error'].get('message', 'Unknown error')})
 
     if 'result' in response and 'transactionData' in response['result']:
         encodedStakingTx = response['result']['transactionData'].get('encodedBody', 'no result')
     else:
-        print(json.dumps(response, indent=1))
+        app.logger.error(json.dumps(response, indent=1))
         return jsonify({'success': False, 'error': 'No tx data in response'})
 
     StakingTxHash = hashlib.sha256(encodedStakingTx.encode()).hexdigest()
@@ -120,9 +147,9 @@ def sign_transaction():
     txHash = request.form.get('txHash', 'no hash')
 
     fireblocks = FireblocksSDK(
-        api_key=fireblocks_api_key,
-        private_key=fireblocks_api_secret,
-        api_base_url=fireblocks_api_base_url
+        api_key=app.config['FIREBLOCKS_API_KEY'],
+        private_key=app.config['FIREBLOCKS_API_SECRET'],
+        api_base_url=app.config['FIREBLOCKS_API_BASE_URL']
     )
 
     extra = {
@@ -157,9 +184,12 @@ def upload_fireblocks_secret():
     if file:
         filepath = file.filename
         file.save(filepath)
+        app.config['FIREBLOCKS_KEY_FILE'] = file.filename
+        app.logger.debug(f'Key file name: {file.filename}')
         return jsonify({'success': True, 'result': 'Successfully uploaded'})
 
     return jsonify({'success': False, 'result': 'An unexpected error occurred'})
 
-
-app.run(debug=True)
+if __name__ == '__main__':
+    set_environment('test')
+    app.run(debug=True)
