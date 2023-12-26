@@ -20,7 +20,7 @@
         <form id="fireblocksForm">
             <div class="form-group">
                 <label for="fireblocksApiKey">API Key</label>
-                <input type="text" class="form-control" id="fireblocksApiKey" name="fireblocks_api_key" value="e52bff63-d7af-4883-b14a-cd114555e4ae">
+                <input type="text" class="form-control" id="fireblocksApiKey" name="fireblocks_api_key" value="{{ defaults["fireblocks_api_key"] }}">
             </div>
 
             <form id="fireblocksSecretForm" method="post" enctype="multipart/form-data">
@@ -178,12 +178,12 @@
                             vaultSelector.trigger('change');
                             showAlert('Successfully connected to Fireblocks', true);
                         } else {
-                            $('#connectionResult').text('Connection error: ' + (data.error || 'Unknown error'));
+                            showAlert('Connection error: ' + (data.error || 'Unknown error'), false);
                         }
                     },
                     error: function(jqXHR, textStatus, errorThrown) {
                         console.log('AJAX error:', textStatus, ' : ', errorThrown);
-                        $('#connectionResult').text('AJAX error: ' + textStatus);
+                        showAlert('AJAX error: ' + textStatus, false);
                     }
                 });
             });

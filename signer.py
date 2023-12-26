@@ -10,7 +10,6 @@ from flask import Flask, request, jsonify, render_template
 dotenv.load_dotenv()
 
 class BaseConfig:
-    FIREBLOCKS_API_KEY = ''
     FIREBLOCKS_API_SECRET = ''
     FIREBLOCKS_KEY_FILE = 'fireblocks_secret.key'
 
@@ -19,12 +18,14 @@ class ProdEnvironment:
     P2P_API_KEY = os.getenv('P2P_API_KEY_PROD')
     P2P_API_URL = f"https://api.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/staking/"
     FIREBLOCKS_API_BASE_URL = "https://api.fireblocks.io"
+    FIREBLOCKS_API_KEY = os.getenv('FIREBLOCKS_API_KEY_PROD')
 
 class TestEnvironment:
     COSMOS_NETWORK = "theta-testnet-001"
     P2P_API_KEY = os.getenv('P2P_API_KEY_TEST')
     P2P_API_URL = f"https://api-test.p2p.org/api/v1/cosmos/{COSMOS_NETWORK}/staking/"
     FIREBLOCKS_API_BASE_URL = "https://sandbox-api.fireblocks.io"
+    FIREBLOCKS_API_KEY = os.getenv('FIREBLOCKS_API_KEY_TEST')
 
 logging.basicConfig(level = logging.DEBUG,
                     format = '%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
@@ -41,9 +42,8 @@ def set_environment(environment):
 @app.route('/')
 def index():
     default_values = {
-        "p2p_api_key": '',
         "wallet_address": '',
-        "fireblocks_api_key": '',
+        "fireblocks_api_key": app.config['FIREBLOCKS_API_KEY'],
         "fireblocks_vault_id": "0"
     }
     return render_template('index.html', defaults=default_values)
