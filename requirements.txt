@@ -1,0 +1,4 @@
+python-dotenv
+requests
+fireblocks_sdk
+Flask
