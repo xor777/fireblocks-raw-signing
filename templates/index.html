@@ -53,11 +53,15 @@
         <form id="createTxForm" class="mb-3">
             <div class="form-group mb-3">
                 <label for="stashWalletAddress">Wallet Address</label>
-                <div class="input-group">
+                <div class="input-group mb-3">
                     <input type="text" class="form-control" id="stashWalletAddress" name="stash_wallet_address">
                     <div class="input-group-append">
                         <button type="button" class="btn btn-secondary" id="getAddressButton">Get address</button>
                     </div>
+                </div>
+                <div class="form-group mb-3">
+                    <label for="accountPubkey">Wallet PubKey</label>
+                    <input type="text" class="form-control" id="accountPubkey">
                 </div>
             </div>
             <div class="form-group mb-3">
@@ -69,30 +73,42 @@
 
         <h2 class="mt-4">Step 3: Sign transaction</h2>
         <form id="signTxForm" class="mb-3">
-            <div class="form-group mb-3">
-                <label for="txData">Tx Data</label>
-                <textarea class="form-control" id="txData" rows="2"></textarea>
-            </div>
 
             <div class="form-group mb-3">
-                <label for="txHash">Tx Hash</label>
-                <input type="text" class="form-control" id="txHash" name="tx_hash">
+                <label for="encodedBody">Encoded body</label>
+                <input type="text" class="form-control" id="encodedBody">
+                <label for="encodedAuthInfo">Encoded auth info</label>
+                <input type="text" class="form-control" id="encodedAuthInfo">
+                <label for="messageHash">Message hash</label>
+                <input type="text" class="form-control" id="messageHash">
             </div>
 
             <div class="d-flex align-items-center mb-3">
                 <button type="button" id="sendTxButton" class="btn btn-primary me-2">Send</button>
                 <span class="me-2">Fireblocks transaction id</span>
-                <input type="text" id="transactionId" class="form-control me-2" style="width: 300px;">
+                <input type="text" id="transactionId" class="form-control me-2" style="width: 300px;" readonly>
                 <button type="button" id="checkTxStatusButton" class="btn btn-secondary me-2">Check status</button>
-                <input type="text" id="transactionStatus" class="form-control me-2" style="width: 200px;">
+                <input type="text" id="transactionStatus" class="form-control me-2" style="width: 200px;" readonly>
             </div>
-        </form>
 
-        <form id="broadcastTxForm" class="mb-3">
             <div class="form-group mb-3">
                 <label for="txSignature">Signature</label>
                 <textarea class="form-control" id="txSignature" rows="2"></textarea>
             </div>
+        </form>
+
+        <h2 class="mt-4">Step 4: Encode and send</h2>
+        <form id="encodeTxForm" class="mb-3">
+            <button type="button" id="encodeTxButton" class="btn btn-primary me-2 mb-3">Encode</button>
+            <div class="form-group mb-3">
+                <label for="encodedTx">Encoded transaction</label>
+                <input type="text" class="form-control" id="encodedTx">
+            </div>
+
+        </form>
+
+        <form id="broadcastTxForm" class="mb-3">
+
             <button type="button" id="broadcastTxButton" class="btn btn-danger">Broadcast transaction</button>
         </form>
 
@@ -109,6 +125,32 @@
         }
 
         $(document).ready(function() {
+            $('#encodeTxButton').click(function (){
+                var encodedBody = $('#encodedBody').val()
+                var encodedAuthInfo = $('#encodedAuthInfo').val()
+                var signature = $('#txSignature').val()
+                var delegatorAddress = $('#stashWalletAddress').val()
+
+                $.ajax({
+                    url: '/encode_tx',
+                    type: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        delegator_address: delegatorAddress,
+                        encoded_body: encodedBody,
+                        encoded_auth_info: encodedAuthInfo,
+                        signature: signature
+                    }),
+                    success: function(data) {
+                        if(data.success) {
+                            $('encodedTx').val(data.encoded_tx)
+                        } else {
+                            showAlert('Error: ' + data.error, false)
+                        }
+                    }
+                });
+            });
+
             $('#getAddressButton').click(function() {
                 var vaultId = $('#vaultSelector').val();
                 var assetId = $('#assetSelector').val();
@@ -121,25 +163,32 @@
                         vault_account_id: vaultId,
                         asset_id: assetId
                     }),
-                    success: function(response) {
-                        if (response.success) {
-                            $('#stashWalletAddress').val(response.address);
+                    success: function(data) {
+                        if (data.success) {
+                            $('#stashWalletAddress').val(data.address);
+                            $('#accountPubkey').val(data.pub_key)
                         } else {
-                            showAlert('Error: ' + response.error, false);
+                            showAlert('Error: ' + data.error, false);
                         }
                     }
                 });
             });
 
             $('#createTxButton').click(function() {
+                var stashWalletAddress = $('#stashWalletAddress').val()
+                var amount = $('#amount').val()
                 $.ajax({
                     url: '/create_tx',
                     type: 'post',
-                    data: $('#createTxForm').serialize(),
+                    data: JSON.stringify({
+                        stash_wallet_address: stashWalletAddress,
+                        amount: amount
+                    }),
                     success: function(data) {
                         if (data.success) {
-                            $('#txData').val(data.tx_data);
-                            $('#txHash').val(data.tx_hash);
+                            $('#encodedBody').val(data.encodedBody);
+                            $('#encodedAuthInfo').val(data.encodedAuthInfo);
+                            $('#messageHash').val(data.messageHash);
 
                         } else {
                             showAlert('Error: ' + data.error, false);
@@ -205,13 +254,13 @@
 
 
             $('#sendTxButton').click(function() {
-                var formData = new FormData($('#fireblocksForm')[0]);
-                formData.append('txData', $('#txData').val());
-                formData.append('txHash', $('#txHash').val());
+                var messageHash = $('#messageHash').val()
                 $.ajax({
                     url: '/send_tx',
                     type: 'post',
-                    data: formData,
+                    data: JSON.stringify({
+                        message_hash: messageHash
+                    }),
                     processData: false,
                     contentType: false,
                     success: function(data) {
@@ -248,18 +297,14 @@
             });
 
             $('#broadcastTxButton').click(function() {
-                var txData = $('#txData').val();
-                var txHash = $('#txHash').val();
-                var txSignature = $('#txSignature').val()
+                var encodedTx = $('#encodedTx').val()
 
                 $.ajax({
                     url: '/broadcast_tx',
                     type: 'POST',
                     contentType: 'application/json',
                     data: JSON.stringify({
-                        transaction_data: txData,
-                        transaction_hash: txHash,
-                        transaction_signature: txSignature
+                        encoded_tx: encodedTx
                     }),
                     success: function(data) {
                         if (data.success) {

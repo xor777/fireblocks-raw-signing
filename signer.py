@@ -33,6 +33,18 @@ class TestEnvironment:
     FIREBLOCKS_API_KEY = os.getenv('FIREBLOCKS_API_KEY_TEST')
 
 
+def get_fireblocks_sdk():
+    fireblocks_api_key = app.config['FIREBLOCKS_API_KEY']
+    fireblocks_api_secret = app.config['FIREBLOCKS_API_SECRET']
+    fireblocks_api_base_url = app.config['FIREBLOCKS_API_BASE_URL']
+
+    return FireblocksSDK(
+        api_key=fireblocks_api_key,
+        private_key=fireblocks_api_secret,
+        api_base_url=fireblocks_api_base_url
+    )
+
+
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
 
@@ -57,12 +69,6 @@ def index():
     return render_template('index.html', defaults=default_values)
 
 
-@app.route('/switch_environment', methods=['POST'])
-def switch_environment():
-    # nothing here yet
-    return
-
-
 @app.route('/connect_fireblocks', methods=['POST'])
 def connect_fireblocks():
     fireblocks_api_key = request.form.get('fireblocks_api_key')
@@ -77,20 +83,34 @@ def connect_fireblocks():
 
     app.config['FIREBLOCKS_API_KEY'] = fireblocks_api_key
     app.config['FIREBLOCKS_API_SECRET'] = fireblocks_api_secret
-    fireblocks_api_base_url = app.config['FIREBLOCKS_API_BASE_URL']
-
-    fireblocks = FireblocksSDK(
-        api_key=fireblocks_api_key,
-        private_key=fireblocks_api_secret,
-        api_base_url=fireblocks_api_base_url
-    )
+    fireblocks = get_fireblocks_sdk()
 
     try:
         vaults = fireblocks.get_vault_accounts_with_page_info(PagedVaultAccountsRequestFilters())
+        app.logger.debug(vaults)
     except Exception as e:
         return jsonify({"success": False, "error": "Error getting vaults: " + str(e)})
 
     return jsonify({'success': True, 'vaults': vaults})
+
+
+@app.route('/upload_fireblocks_secret', methods=['POST'])
+def upload_fireblocks_secret():
+    if 'fireblocks_secret' not in request.files:
+        return jsonify({'success': False, 'result': 'Choose file to upload'})
+
+    file = request.files['fireblocks_secret']
+    if file.filename == '':
+        return jsonify({'success': False, 'result': 'No file selected'})
+
+    if file:
+        filepath = file.filename
+        file.save(filepath)
+        app.config['FIREBLOCKS_KEY_FILE'] = file.filename
+        app.logger.debug(f'Key file name: {file.filename}')
+        return jsonify({'success': True, 'result': 'Successfully uploaded'})
+
+    return jsonify({'success': False, 'result': 'An unexpected error occurred'})
 
 
 @app.route('/get_wallet_address', methods=['POST'])
@@ -101,24 +121,31 @@ def get_wallet_address():
     asset_id = data.get('asset_id')
 
     try:
-        fireblocks = FireblocksSDK(
-            api_key=app.config['FIREBLOCKS_API_KEY'],
-            private_key=app.config['FIREBLOCKS_API_SECRET'],
-            api_base_url=app.config['FIREBLOCKS_API_BASE_URL']
-        )
-
+        fireblocks = get_fireblocks_sdk()
         addr = fireblocks.get_deposit_addresses(vault_account_id=vault_account_id, asset_id=asset_id)
-        return jsonify({'success': True, 'address': addr[0]['address']})
+        app.logger.debug(json.dumps(addr, indent=1))
 
+        pub_key = fireblocks.get_public_key_info_for_vault_account(
+            asset_id=asset_id,
+            vault_account_id=vault_account_id,
+            compressed=True,
+            change=0,
+            address_index=0)
+        app.logger.debug(json.dumps(pub_key, indent=1))
+        pub_key = pub_key["publicKey"]
+
+        return jsonify({'success': True, 'address': addr[0]['address'], 'pub_key': pub_key})
     except Exception as e:
         return jsonify({'success': False, 'error': 'Error calling Fireblocks API: ' + str(e)})
 
 
 @app.route('/create_tx', methods=['POST'])
 def create_staking_tx():
-    amount = request.form.get("amount", "0")
-    amount = int(amount) if amount.isdigit() else 0
-    wallet = request.form.get("stash_wallet_address", "").strip()
+    data = request.get_json(force=True)
+
+    amount = data.get("amount", "0")
+    amount = float(amount) if amount.replace('.', '', 1).isdigit() else 0.0
+    wallet = data.get("stash_wallet_address", "").strip()
 
     if not wallet or amount == 0:
         return jsonify({'success': False, 'error': 'No wallet specified or amount = 0'})
@@ -134,41 +161,39 @@ def create_staking_tx():
         "amount": amount
     }
 
+    app.logger.debug(json.dumps(payload, indent=1))
     response = requests.post(app.config['P2P_API_URL'] + "staking/stake/", headers=headers, json=payload)
     response = response.json()
+    app.logger.debug(json.dumps(response, indent=1))
 
     if 'error' in response and response['error'] is not None:
-        app.logger.error(json.dumps(response, indent=1))
         return jsonify({'success': False, 'error': response['error'].get('message', 'Unknown error')})
 
-    if 'result' in response and 'transactionData' in response['result']:
-        encoded_staking_tx = response['result']['transactionData'].get('encodedBody', 'no result')
-    else:
-        app.logger.error(json.dumps(response, indent=1))
-        return jsonify({'success': False, 'error': 'No tx data in response'})
+    encoded_body = response['result']['transactionData'].get('encodedBody', 'no result')
+    encoded_auth_info = response['result']['transactionData'].get('encodedAuthInfo', 'no result')
+    message_hash = hashlib.sha256(encoded_body.encode()).hexdigest()
 
-    staking_tx_hash = hashlib.sha256(encoded_staking_tx.encode()).hexdigest()
-    return jsonify({'success': True, 'tx_data': encoded_staking_tx, 'tx_hash': staking_tx_hash})
+    return jsonify({'success': True,
+                    'encodedBody': encoded_body,
+                    'encodedAuthInfo': encoded_auth_info,
+                    'messageHash': message_hash})
 
 
 @app.route('/send_tx', methods=['POST'])
 def send_transaction():
+    data = request.get_json(force=True)
 
-    tx_hash = request.form.get('txHash', None)
-    if tx_hash is None:
+    message_hash = data.get('message_hash', None)
+    if message_hash is None:
         return jsonify({'success': False, 'error': 'No tx hash provided'})
 
-    fireblocks = FireblocksSDK(
-        api_key=app.config['FIREBLOCKS_API_KEY'],
-        private_key=app.config['FIREBLOCKS_API_SECRET'],
-        api_base_url=app.config['FIREBLOCKS_API_BASE_URL']
-    )
+    fireblocks = get_fireblocks_sdk()
 
     extra = {
         "rawMessageData": {
             "messages": [
                 {
-                    "content": tx_hash,
+                    "content": message_hash,
                 }
             ]
         }
@@ -211,18 +236,16 @@ def check_tx_status():
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/broadcast_tx', methods=['POST'])
-def broadcast_tx():
+@app.route('/encode_tx', methods=['POST'])
+def encode_tx():
     data = request.get_json(force=True)
-    tx_data = data.get('transaction_data', '')
-    tx_hash = data.get('transaction_hash', '')
-    tx_signature = data.get('transaction_signature', '')
+    delegator_address = data['delegator_address']
+    encoded_body = data.get('encoded_body', '')
+    encoded_auth_info = data.get('encoded_auth_info', '')
+    signature = data.get('signature', '')
 
-    if not tx_signature:
-        return jsonify({'success': False, 'error': 'No signature'})
-
-    # TODO: investigate how to correctly form the signed tx
-    signed_tx = tx_data + tx_hash + tx_signature
+    if not encoded_body or not encoded_auth_info or not signature:
+        return jsonify({'success': False, 'error': 'No transaction stuff provided (enc body, auth info, signature)'})
 
     headers = {
         "accept": "application/json",
@@ -231,13 +254,47 @@ def broadcast_tx():
     }
 
     payload = {
-        "signedTransaction": signed_tx
+        "delegatorAddress": delegator_address,
+        "encodedBody": encoded_body,
+        "encodedAuthInfo": encoded_auth_info,
+        "signature": signature
     }
 
-    response = requests.post(app.config['P2P_API_URL'] + "transaction/send/", headers=headers, json=payload)
+    app.logger.debug(json.dumps(payload, indent=1))
+
+    response = requests.post(app.config['P2P_API_URL'] + "transaction/encode/", headers=headers, json=payload)
     response = response.json()
 
-    app.logger.error(json.dumps(response, indent=1))
+    app.logger.debug(json.dumps(response, indent=1))
+
+    if 'error' in response and response['error'] is not None:
+        return jsonify({'success': False, 'error': response['error'].get('message', 'Unknown error')})
+
+    return jsonify({'success': True, 'encodedTx': 'enc tx'})
+
+
+@app.route('/broadcast_tx', methods=['POST'])
+def broadcast_tx():
+    data = request.get_json(force=True)
+    encoded_tx = data.get('encoded_tx', '')
+
+    if not encoded_tx:
+        return jsonify({'success': False, 'error': 'No transaction data provided'})
+
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": "Bearer " + app.config['P2P_API_KEY']
+    }
+
+    payload = {
+        "signedTransaction": encoded_tx
+    }
+
+    app.logger.debug(json.dumps(payload, indent=1))
+    response = requests.post(app.config['P2P_API_URL'] + "transaction/send/", headers=headers, json=payload)
+    response = response.json()
+    app.logger.debug(json.dumps(response, indent=1))
 
     if 'error' in response and response['error'] is not None:
         return jsonify({'success': False, 'error': response['error'].get('message', 'Unknown error')})
@@ -245,25 +302,8 @@ def broadcast_tx():
     return jsonify({'success': True, 'result': 'done'})
 
 
-@app.route('/upload_fireblocks_secret', methods=['POST'])
-def upload_fireblocks_secret():
-    if 'fireblocks_secret' not in request.files:
-        return jsonify({'success': False, 'result': 'Choose file to upload'})
-
-    file = request.files['fireblocks_secret']
-    if file.filename == '':
-        return jsonify({'success': False, 'result': 'No file selected'})
-
-    if file:
-        filepath = file.filename
-        file.save(filepath)
-        app.config['FIREBLOCKS_KEY_FILE'] = file.filename
-        app.logger.debug(f'Key file name: {file.filename}')
-        return jsonify({'success': True, 'result': 'Successfully uploaded'})
-
-    return jsonify({'success': False, 'result': 'An unexpected error occurred'})
-
-
 if __name__ == '__main__':
+    environment = os.getenv('APPLICATION_ENVIRONMENT', 'test')
     set_environment('test')
-    app.run(debug=True)
+    logging.info(f'Environment: {environment}')
+    app.run(host='0.0.0.0', port=8000, debug=False if environment == 'test' else False)
